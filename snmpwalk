@@ -1,0 +1,95 @@
+#!/opt/NSO/NSO_A3/snmp/bin/python3
+
+import sys
+import re
+import schedule
+import time
+import signal
+from pysnmp.hlapi import *
+
+
+
+def signal_handler(sig, frame):
+    print('Ctrl+C pressed. Exiting program.')
+    sys.exit(0)
+
+# Register the signal handler
+signal.signal(signal.SIGINT, signal_handler)
+
+def task(ip, c, v, oid, port):
+    errorIndication, errorStatus, errorIndex, varBinds = getCmd(
+        SnmpEngine(),
+        CommunityData(c, mpModel= v),
+        UdpTransportTarget((ip, port)),
+        ContextData(),
+        ObjectType(ObjectIdentity(oid))
+    )
+    
+    if errorIndication:
+        print(errorIndication)
+    else:
+        for oid, value in varBinds:
+            # Determine the type of the value
+            if isinstance(value, Counter32):
+                value_type = "Counter32"
+                value = int(value)
+            elif isinstance(value, Counter64):
+                value_type = "Counter64"
+                value = int(value)
+            elif isinstance(value, Integer):
+                value_type = "Integer"
+                value = int(value)
+            else:
+                value_type = type(value).__name__
+            
+            # Print the OID, type, and value in a unified format
+            print(f"{oid} ({value_type}) = {value}")
+
+
+oid_regex = r"(\d{1,}\.){1,}\d{1,}"
+
+if len(sys.argv) == 10 and sys.argv[0] == "./snmpwalk":
+    skip_next = False
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+        elif arg == "-t":
+            t = sys.argv[sys.argv.index(arg) + 1]
+            skip_next = True
+        elif arg == "-r":
+            r = sys.argv[sys.argv.index(arg) + 1]
+            skip_next = True
+        elif ":" in arg:
+            ip, port = arg.split(":")
+        elif arg == "-c":
+            c = sys.argv[sys.argv.index(arg) + 1]
+            skip_next = True
+        elif arg == "-v2c":
+            v = 1
+        elif arg == "-v1":
+            v = 0
+        elif arg == "-v3":
+            v = 2
+        elif re.search(oid_regex , arg):
+            oid = re.search(oid_regex , arg).group()
+        else:
+            print("some thing is wrong\n")
+else:
+    print("Invalid arguments provided.")
+    sys.exit(1)
+
+
+r = int(r)
+t = float(t)
+if r==-1:
+    while True:
+        task(ip, c, v, oid, port)
+        time.sleep(1/t)
+    sys.exit(0)
+else:
+    while r > 0:
+        r = r - 1
+        task(ip, c, v, oid, port)
+        time.sleep(1/t)
+    sys.exit(0)
+
