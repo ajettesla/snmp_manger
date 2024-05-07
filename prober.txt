@@ -4,9 +4,9 @@ import sys
 import re
 import time
 import signal
-from pysnmp.hlapi import *
+import math
+from easysnmp import Session, EasySNMPTimeoutError
 
-global current_time
 
 def signal_handler(sig, frame):
     print('Ctrl+C pressed. Exiting program.')
@@ -15,56 +15,180 @@ def signal_handler(sig, frame):
 # Register the signal handler
 signal.signal(signal.SIGINT, signal_handler)
 
-def snmpget(ip, c, v, oid, port):
-    errorIndication, errorStatus, errorIndex, varBinds = getCmd(SnmpEngine(),CommunityData(c, mpModel= v),UdpTransportTarget((ip, port)),ContextData(),ObjectType(ObjectIdentity(oid)))
+
+
+previous_values = []
+previous_ty = None
+previous_time = {}
+previous_dt = {}
+
+
+
+def calculate_counter_delta(prev_counter, current_counter, counter_bits):
+    max_counter_value = 2 ** counter_bits - 1
+    if current_counter >= prev_counter:
+        # No wraparound occurred
+        return current_counter - prev_counter
+    else:
+        # Wraparound occurred
+        return max_counter_value - prev_counter + current_counter + 1
     
-    if errorIndication:
-        print(errorIndication)
-    elif not varBinds:
-        print("No response received.")
-    else:
-        for oid, value in varBinds:
-            print(f"{int(value)}", end= " | ")
+
+def snmpget(ip, c, v, oid, port, to, F, ps):
+    global  previous_values, previous_ty, previous_dt ,const
+    ty = None
+    global before_time
+    global previous_dt
+    global const
+    get_value = []
+    get_value_type = []
+    oid1_c = "iso.3.6.1.4.1.4171.40.1"
+    k = True
+
+    try:
+        session = Session(hostname=ip, community=c, version=v, timeout=to, remote_port=port)
+        varBinds = session.get(oid_list)
+
+        if session.error_string:
+            print(session.error_string)
+        elif not varBinds:
+            const = const + 1
+        else:
+            ty = int(varBinds[0].value)
+
+            for oid in range(1,len(varBinds)):
+                if varBinds[oid].snmp_type in ("COUNTER64", "COUNTER32", "COUNTER") and varBinds[oid] not in ('NOSUCHOBJECT', 'NOSUCHINSTANCE'):
+                    if varBinds[oid].value != None or varBinds[oid].value != "":
+                        get_value.append(int(varBinds[oid].value))
+                        get_value_type.append(varBinds[oid].snmp_type)
+                        k = True
+
+                elif varBinds[oid].snmp_type == "GAUGE" and varBinds[oid] not in ('NOSUCHOBJECT', 'NOSUCHINSTANCE'):
+                    if varBinds[oid].value != None:
+                        get_value.append(int(varBinds[oid]))
+                        get_value_type.append(varBinds[oid].snmp_type)
+                        k = True
+                elif varBinds[oid].snmp_type in ('NOSUCHOBJECT', 'NOSUCHINSTANCE', 'TICKS') :
+                    if ps == True:
+                        print("|NOSUCH OBJECT", end="")
+                        sys.stdout.flush()
+                    k = False
+                else:
+                    print(f"oid {oid} value {varBinds[oid].value} type {varBinds[oid].snmp_type}")
+            
+            if k == True:
+                for oid in range(0, len(get_value)):
+                    if len(previous_values) != 0:
+                        if ty > previous_ty:
+                            if (len(get_value) >= (oid)):
+                                delta = int(get_value[oid]) - int(previous_values[oid])
+                            dt = round(before_time - previous_dt)
+                            if dt == 0:
+                                dt = to
+                            rate = delta/dt
+
+                            if rate < 0:
+                                if get_value_type[oid] == "COUNTER64":
+                                    delta = delta + 2**64
+                                    rate = delta/dt
+                                elif get_value_type[oid] == "COUNTER32" or get_value_type[oid] == "COUNTER":
+                                    delta = delta + 2**32
+                                    rate = delta/dt
+                                elif get_value_type[oid] == 'GAUGE':
+                                    delta = delta
+
+                            rate = round(rate)
+                            print(f"|{rate}",end="")
+                            sys.stdout.flush()
+                        else:
+                            print("system is restarted")
+                k = False
+
+        
+        previous_dt = before_time
+        previous_ty = ty
+        previous_values[:] = get_value
+    
+        
+    except EasySNMPTimeoutError as e:
+        print(f" Either oid does not exits or timeout occurs ",end="")
+        sys.exit(0)
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}",end="")
+        sys.exit(0)
+        
+    
+        
+
+
+        
+       
+
+
+        
+        
+           
 
 
 
 
-def complete(ip, c, v, oid, port, t, r):
-    if r==-1:
-        while True:
-            snmpget(ip, c, v, oid, port)
-            time.sleep(1/t)
-    else:
-        print(f"{int(time.time())}", end=" | ")
-        while r > 0:
-            r = r - 1
-            snmpget(ip, c, v, oid, port)
-            time.sleep(1/t)
+
+
+v = 2
 
 ip , port , c = sys.argv[1].split(":")
 
-t = sys.argv[2]
+F= float(sys.argv[2])
 
-r = sys.argv[3]
+r = int(sys.argv[3]) + 1
 
-v = 1
+to = 1/F
 
-r = int(r)
+oid_list = ["1.3.6.1.2.1.1.3.0"]
 
-t = float(t)
+for oid in sys.argv[4:]:
+    oid_list.append(oid)
 
-if len(sys.argv) > 4 :
-    for arg in sys.argv[4:]:
-        current_time = time.time()
-        complete(ip, c, v, arg, port, t, r)
-        print("\n")
+
+if r == -1:
+    k = r
+    ps = False
+    while True:
+        if k != r :
+            print(time.time(),end="")
+            ps = True
+        before_time = time.time()
+        snmpget(ip, c, v, oid_list, port, to, F, ps)
+        time_after = time.time()
+        if to >= (time_after - before_time):
+            time.sleep(to - (time_after - before_time))
+        else:
+            m = math.ceil(((time_after - before_time))/to)
+            time.sleep(m*to - (time_after - before_time))
+        if k != r :
+            print("")
+        k = k + 1
 else:
-    print("error please specify atleast on oid")
-    sys.exit(0)
+    k = r
+    ps = False
+    while r > 0:
+        if k != r :
+            print(time.time(),end="")
+            ps = True
+        before_time = time.time()
+        snmpget(ip, c, v, oid_list, port, to, F, ps)
+        time_after = time.time()
+        if to >= (time_after - before_time):
+            time.sleep(to - (time_after - before_time))
+        else:
+            m = math.ceil(((time_after - before_time))/to)
+            time.sleep(m*to - (time_after - before_time))
+
+        if k != r :
+            print("")
+        r = r - 1
+
+
+
 
 sys.exit(0) 
-
-
-
-
-
